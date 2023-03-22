@@ -1,4 +1,4 @@
-package gb28281
+package gb28181
 
 import (
 	"strconv"
@@ -8,12 +8,12 @@ import (
 )
 
 const (
-	ZoomOut = 5
-	ZoomIn  = 4
-	Up      = 3
-	Down    = 2
-	Left    = 1
-	Right   = 0
+	PtzZoomOut = 5
+	PtzZoomIn  = 4
+	PtzUp      = 3
+	PtzDown    = 2
+	PtzLeft    = 1
+	PtzRight   = 0
 )
 
 type Cmd []int
@@ -70,10 +70,10 @@ func NewPtzCmd(config PtzConfig) Cmd {
 
 	if config.Zoom != nil {
 		if config.Zoom.Direction == -1 {
-			cmd[3] += 1 << ZoomIn
+			cmd[3] += 1 << PtzZoomIn
 		}
 		if config.Zoom.Direction == 1 {
-			cmd[3] += 1 << ZoomOut
+			cmd[3] += 1 << PtzZoomOut
 		}
 
 		cmd[6] = config.Zoom.Speed << 4
@@ -81,10 +81,10 @@ func NewPtzCmd(config PtzConfig) Cmd {
 
 	if config.Horizontal != nil {
 		if config.Horizontal.Direction == -1 {
-			cmd[3] += 1 << Left
+			cmd[3] += 1 << PtzLeft
 		}
 		if config.Horizontal.Direction == 1 {
-			cmd[3] += 1 << Right
+			cmd[3] += 1 << PtzRight
 		}
 
 		cmd[4] = config.Horizontal.Speed
@@ -92,10 +92,10 @@ func NewPtzCmd(config PtzConfig) Cmd {
 
 	if config.Vertical != nil {
 		if config.Vertical.Direction == -1 {
-			cmd[3] += 1 << Down
+			cmd[3] += 1 << PtzDown
 		}
 		if config.Vertical.Direction == 1 {
-			cmd[3] += 1 << Up
+			cmd[3] += 1 << PtzUp
 		}
 
 		cmd[5] = config.Vertical.Speed

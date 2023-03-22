@@ -1,25 +1,19 @@
-package main
+package sip_client
 
-import "encoding/xml"
+const ContentTypeXML = "Application/MANSCDP+xml"
 
-type Message struct {
-	payload any
+type XMLPayload struct {
+	payload []byte
 }
 
-func NewMessage(payload any) *Message {
-	return &Message{payload: payload}
+func NewXMLPayload(payload []byte) *XMLPayload {
+	return &XMLPayload{payload: payload}
 }
 
-func (m *Message) Data() []byte {
-	switch p := m.payload.(type) {
-	case []byte:
-		return p
-	default:
-		data, _ := xml.Marshal(m.payload)
-		return data
-	}
+func (x *XMLPayload) Data() []byte {
+	return x.payload
 }
 
-func (m *Message) ContentType() string {
-	return "Application/MANSCDP+xml"
+func (x *XMLPayload) ContentType() string {
+	return ContentTypeXML
 }

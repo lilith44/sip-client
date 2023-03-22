@@ -1,58 +1,77 @@
-package main
+package sip_client
 
 import (
 	"bytes"
+	"context"
 	"net"
+	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/jart/gosip/sip"
 	"go.uber.org/zap"
 )
 
-type client struct {
-	conn      net.Conn
-	connMutex sync.RWMutex
+type Client struct {
+	conn  net.Conn
+	mutex sync.RWMutex
 
-	options ClientOptions
-
-	logger *zap.SugaredLogger
-
-	pool sync.Map
+	server ServerOptions
+	client ClientOptions
 
 	messageHandler MessageHandler
+	logger         *zap.SugaredLogger
+	pool           sync.Map
 }
 
-type channel chan *sip.Msg
+type MessageHandler func(c *Client, msg *sip.Msg)
 
-type MessageHandler func(c *client, msg *sip.Msg)
+type msgResponse struct {
+	msgs []*sip.Msg
+	err  error
+}
 
-func NewClient(options ClientOptions) *client {
-	logger, _ := zap.NewDevelopment()
-
-	return &client{
-		options: options,
-
-		logger:         logger.Sugar(),
+func NewClient(options Options) *Client {
+	return &Client{
+		server:         options.Server,
+		client:         options.Client,
 		messageHandler: options.MessageHandler,
+		logger:         options.Logger,
 	}
 }
 
-func (c *client) Connect() error {
-	c.connMutex.Lock()
-	defer c.connMutex.Unlock()
+func (c *Client) ClientOptions() ClientOptions {
+	return c.client
+}
 
+func (c *Client) ServerOptions() ServerOptions {
+	return c.server
+}
+
+func (c *Client) Logger() *zap.SugaredLogger {
+	return c.logger
+}
+
+func (c *Client) Connect() error {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	return c.connect()
+}
+
+func (c *Client) connect() error {
 	var conn net.Conn
-	if c.options.Protocol == "udp" {
-		local, err := net.ResolveUDPAddr("udp", c.options.Local.FullHost())
+	if c.server.Protocol == "udp" {
+		local, err := net.ResolveUDPAddr("udp", c.client.FullHost())
 		if err != nil {
 			return err
 		}
-		server, err := net.ResolveUDPAddr("udp", c.options.Server.FullHost())
+		server, err := net.ResolveUDPAddr("udp", c.server.FullHost())
 		if err != nil {
 			return err
 		}
 
-		conn, err = net.DialUDP(c.options.Protocol, local, server)
+		conn, err = net.DialUDP(c.server.Protocol, local, server)
 		if err != nil {
 			return err
 		}
@@ -62,14 +81,61 @@ func (c *client) Connect() error {
 	return nil
 }
 
-func (c *client) Disconnect() {
-	c.connMutex.Lock()
-	defer c.connMutex.Unlock()
+func (c *Client) reconnect() error {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	c.logger.Warnf("连接断开，重新进行连接")
 
 	_ = c.conn.Close()
+	return c.connect()
 }
 
-func (c *client) Listen() {
+func (c *Client) Listen() {
+	for {
+		ch := make(chan struct{})
+		go c.listen(ch)
+		<-ch
+	}
+}
+
+func (c *Client) Send(msg *sip.Msg) (*sip.Msg, error) {
+	ch := make(chan *msgResponse)
+	defer close(ch)
+	go c.send(msg, ch, 1)
+	rsp := <-ch
+	if len(rsp.msgs) == 0 {
+		return nil, rsp.err
+	}
+
+	return rsp.msgs[0], rsp.err
+}
+
+func (c *Client) SendForNoResponse(msg *sip.Msg) error {
+	ch := make(chan *msgResponse)
+	defer close(ch)
+	go c.send(msg, ch, 0)
+	rsp := <-ch
+	return rsp.err
+}
+
+func (c *Client) SendForMultiResponse(msg *sip.Msg, responseCount int) ([]*sip.Msg, error) {
+	ch := make(chan *msgResponse)
+	defer close(ch)
+	go c.send(msg, ch, responseCount)
+	rsp := <-ch
+	return rsp.msgs, rsp.err
+}
+
+func (c *Client) listen(ch chan struct{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("[Panic]%s\n%s", r, debug.Stack())
+		}
+
+		ch <- struct{}{}
+	}()
+
 	var (
 		n      int
 		err    error
@@ -80,46 +146,75 @@ func (c *client) Listen() {
 		buffer = make([]byte, 2048)
 		n, err = c.conn.Read(buffer)
 		if err != nil {
-			c.logger.Errorf("read data failed: %s", err)
+			c.logger.Errorf("读取数据失败：%s", err)
+			err = c.reconnect()
+			if err != nil {
+				c.logger.Errorf("重新连接失败：%s", err)
+			}
 			continue
 		}
 
 		var msg *sip.Msg
 		msg, err = sip.ParseMsg(buffer[:n])
 		if err != nil {
-			c.logger.Errorf("parse sip message failed: %s", err)
+			c.logger.Errorf("解析sip消息失败：%s", err)
 			continue
 		}
 
-		c.logger.Infof("receive message from %s\n%s", c.options.Server.FullHost(), msg)
+		c.logger.Infof("收到来自%s的消息\n%s", c.server.FullHost(), msg)
 
-		ch, loaded := c.pool.LoadAndDelete(msg.CSeq)
+		channel, loaded := c.pool.Load(msg.CallID)
 		if !loaded {
-			c.messageHandler(c, msg)
+			go c.messageHandler(c, msg)
 			continue
 		}
 
-		ch.(channel) <- msg
+		if channel.(*Channel).Receive(msg) {
+			c.pool.Delete(msg.CallID)
+		}
 	}
 }
 
-func (c *client) Send(msg *sip.Msg) (*sip.Msg, error) {
+func (c *Client) send(msg *sip.Msg, ch chan *msgResponse, responseCount ...int) {
+	rsp := new(msgResponse)
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Errorf("[Panic]%s\n%s", r, debug.Stack())
+		}
+
+		ch <- rsp
+	}()
+
 	var b bytes.Buffer
 	msg.Append(&b)
-	c.logger.Infof("send message to %s\n%s", c.options.Server.FullHost(), msg)
+	c.logger.Infof("发送消息至%s\n%s", c.server.FullHost(), msg)
 
 	n, err := c.conn.Write(b.Bytes())
+	if err != nil || n != b.Len() {
+		rsp.err = err
+		c.logger.Errorf("发送消息失败：%s", err)
+		rsp.err = c.reconnect()
+		return
+	}
+
+	count := 0
+	if len(responseCount) != 0 {
+		count = responseCount[0]
+	}
+
+	if count == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.server.Timeout*time.Second)
+
+	channel := NewChannel(ctx, cancel, count)
+	c.pool.Store(msg.CallID, channel)
+
+	rsp.msgs, rsp.err = channel.wait()
 	if err != nil {
-		c.logger.Errorf("send message error: %s", err)
-		return nil, err
-	}
-	if n != b.Len() {
-		c.logger.Errorf("send message error: %s", err)
-		return nil, err
+		c.logger.Errorf("等待消息返回发送错误：%s", err)
 	}
 
-	ch := make(channel)
-	c.pool.Store(msg.CSeq, ch)
-
-	return <-ch, nil
+	return
 }
