@@ -1,4 +1,4 @@
-module github.com/lilith44/sip_client
+module github.com/lilith44/sip-client
 
 go 1.18
 
