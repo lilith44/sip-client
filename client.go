@@ -20,24 +20,52 @@ type Client struct {
 	client ClientOptions
 
 	messageHandler MessageHandler
+	registerFunc   RegisterFunc
 	logger         *zap.SugaredLogger
 	pool           sync.Map
 }
 
 type MessageHandler func(c *Client, msg *sip.Msg)
 
+type RegisterFunc func(c *Client) error
+
 type msgResponse struct {
 	msgs []*sip.Msg
 	err  error
 }
 
-func NewClient(options Options) *Client {
-	return &Client{
+func NewClient(options Options) (*Client, error) {
+	c := &Client{
 		server:         options.Server,
 		client:         options.Client,
 		messageHandler: options.MessageHandler,
+		registerFunc:   options.RegisterFunc,
 		logger:         options.Logger,
 	}
+
+	if err := c.Connect(); err != nil {
+		return nil, err
+	}
+
+	go c.Listen()
+
+	go func() {
+		for {
+			time.Sleep(time.Duration(c.client.Register.KeepaliveInterval) * time.Second)
+
+			c.logger.Infof("开始保活")
+			err := c.registerFunc(c)
+			if err != nil {
+				c.logger.Errorf("保活失败：%s", err)
+			}
+		}
+	}()
+
+	if err := c.registerFunc(c); err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 func (c *Client) ClientOptions() ClientOptions {
@@ -89,6 +117,14 @@ func (c *Client) reconnect() error {
 
 	_ = c.conn.Close()
 	return c.connect()
+}
+
+func (c *Client) register() error {
+	return c.registerFunc(c)
+}
+
+func (c *Client) SetMessageHandler(handler MessageHandler) {
+	c.messageHandler = handler
 }
 
 func (c *Client) Listen() {

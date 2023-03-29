@@ -12,6 +12,7 @@ type Options struct {
 	Server ServerOptions
 	Client ClientOptions
 
+	RegisterFunc   RegisterFunc
 	MessageHandler MessageHandler
 	Logger         *zap.SugaredLogger
 }
