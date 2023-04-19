@@ -14,6 +14,11 @@ const (
 	PtzDown    = 2
 	PtzLeft    = 1
 	PtzRight   = 0
+
+	FiIrisReduce = 3
+	FiIrisExpand = 2
+	FiFocusNear  = 1
+	FiFocusAway  = 0
 )
 
 type Cmd []int
@@ -65,6 +70,25 @@ type (
 	}
 )
 
+type (
+	FiIrisParam struct {
+		// 放大为1 缩小为-1
+		Direction int `json:"direction" validate:"oneof=-1 0 1"`
+		Speed     int `json:"speed" validate:"min=0,max=255"`
+	}
+
+	FiFocusParam struct {
+		// 聚焦近为1 聚焦远为-1
+		Direction int `json:"direction" validate:"oneof=-1 0 1"`
+		Speed     int `json:"speed" validate:"min=0,max=255"`
+	}
+
+	FiConfig struct {
+		Iris  *FiIrisParam  `json:"iris"`
+		Focus *FiFocusParam `json:"focus"`
+	}
+)
+
 func NewPtzCmd(config PtzConfig) Cmd {
 	cmd := newCmd()
 
@@ -99,6 +123,36 @@ func NewPtzCmd(config PtzConfig) Cmd {
 		}
 
 		cmd[5] = config.Vertical.Speed
+	}
+
+	return cmd
+}
+
+func NewFiCmd(config FiConfig) Cmd {
+	cmd := newCmd()
+	// 表示是fi指令
+	cmd[3] += 1 << 6
+
+	if config.Iris != nil {
+		if config.Iris.Direction == -1 {
+			cmd[3] += 1 << FiIrisReduce
+		}
+		if config.Iris.Direction == 1 {
+			cmd[3] += 1 << FiIrisExpand
+		}
+
+		cmd[5] = config.Iris.Speed
+	}
+
+	if config.Focus != nil {
+		if config.Focus.Direction == -1 {
+			cmd[3] += 1 << FiFocusNear
+		}
+		if config.Focus.Direction == 1 {
+			cmd[3] += 1 << FiFocusAway
+		}
+
+		cmd[4] = config.Focus.Speed
 	}
 
 	return cmd
